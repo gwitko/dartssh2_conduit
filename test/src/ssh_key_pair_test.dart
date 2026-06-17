@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:asn1lib/asn1lib.dart';
 import 'package:dartssh2/dartssh2.dart';
 import 'package:dartssh2/src/hostkey/hostkey_ecdsa.dart';
+import 'package:dartssh2/src/ssh_message.dart';
 import 'package:test/test.dart';
 
 import '../test_utils.dart';
@@ -71,6 +72,88 @@ MAA=
     expect(keypair.single, isA<RsaPrivateKey>());
   });
 
+  test('SSHCallbackKeyPair supports asynchronous signing', () async {
+    final softwareKey = SSHKeyPair.fromPem(ed25519Private).single;
+    final keypair = SSHCallbackKeyPair(
+      name: softwareKey.name,
+      type: softwareKey.type,
+      publicKey: softwareKey.toPublicKey(),
+      signer: (data) async {
+        await Future<void>.delayed(Duration.zero);
+        return softwareKey.sign(data);
+      },
+    );
+
+    final signature = await keypair.signAsync(
+      Uint8List.fromList('sign-me'.codeUnits),
+    );
+
+    expect(signature, isA<SSHSignature>());
+    expect(keypair.toPublicKey().encode(), softwareKey.toPublicKey().encode());
+    expect(
+      () => keypair.sign(Uint8List.fromList('sign-me'.codeUnits)),
+      throwsUnsupportedError,
+    );
+  });
+
+  test('SSHKeyPair.fromPem works with OpenSSH ECDSA security key stubs', () {
+    final keypair = SSHKeyPair.fromPem(_securityKeyEcdsaPem).single;
+
+    expect(keypair, isA<OpenSSHSecurityKeyEcdsaKeyPair>());
+    final securityKey = keypair as OpenSSHSecurityKeyEcdsaKeyPair;
+    expect(securityKey.application, 'ssh:');
+    expect(securityKey.flags, 1);
+    expect(securityKey.keyHandle, Uint8List.fromList([9, 8, 7]));
+    expect(
+      SSHSecurityKeyEcdsaPublicKey.decode(securityKey.toPublicKey().encode())
+          .application,
+      'ssh:',
+    );
+    expect(() => securityKey.sign(Uint8List(0)), throwsUnsupportedError);
+  });
+
+  test('SSHKeyPair.fromPem works with OpenSSH Ed25519 security key stubs', () {
+    final keypair = SSHKeyPair.fromPem(_securityKeyEd25519Pem).single;
+
+    expect(keypair, isA<OpenSSHSecurityKeyEd25519KeyPair>());
+    final securityKey = keypair as OpenSSHSecurityKeyEd25519KeyPair;
+    expect(securityKey.application, 'ssh:');
+    expect(securityKey.flags, 1);
+    expect(securityKey.keyHandle, Uint8List.fromList([1, 2, 3]));
+    expect(
+      SSHSecurityKeyEd25519PublicKey.decode(securityKey.toPublicKey().encode())
+          .application,
+      'ssh:',
+    );
+    expect(() => securityKey.sign(Uint8List(0)), throwsUnsupportedError);
+  });
+
+  test('security key signatures round-trip through SSH encoding', () {
+    final ecdsa = SSHSecurityKeyEcdsaSignature(
+      r: BigInt.from(11),
+      s: BigInt.from(22),
+      flags: 1,
+      counter: 7,
+    );
+    final decodedEcdsa = SSHSecurityKeyEcdsaSignature.decode(ecdsa.encode());
+    expect(decodedEcdsa.r, ecdsa.r);
+    expect(decodedEcdsa.s, ecdsa.s);
+    expect(decodedEcdsa.flags, 1);
+    expect(decodedEcdsa.counter, 7);
+
+    final ed25519 = SSHSecurityKeyEd25519Signature(
+      signature: Uint8List.fromList(List<int>.filled(64, 42)),
+      flags: 1,
+      counter: 8,
+    );
+    final decodedEd25519 = SSHSecurityKeyEd25519Signature.decode(
+      ed25519.encode(),
+    );
+    expect(decodedEd25519.signature, ed25519.signature);
+    expect(decodedEd25519.flags, 1);
+    expect(decodedEd25519.counter, 8);
+  });
+
   test('SSHKeyPair.fromPem works with ECdSA private key', () async {
     final pem = ecdsaNistP256Private;
     final keypair = SSHKeyPair.fromPem(pem);
@@ -124,21 +207,24 @@ MAA=
       final keypair = keypairs.single as OpenSSHEcdsaKeyPair;
 
       final publicBlob = base64.decode(legacyEcPublicKey.split(' ')[1]);
-      final publicKey =
-          SSHEcdsaPublicKey.decode(Uint8List.fromList(publicBlob));
+      final publicKey = SSHEcdsaPublicKey.decode(
+        Uint8List.fromList(publicBlob),
+      );
 
       expect(keypair.curveId, 'nistp256');
       expect(keypair.q, publicKey.q);
     },
   );
 
-  test('SSHKeyPair.fromPem rejects passphrase for unencrypted EC PRIVATE KEY',
-      () {
-    expect(
-      () => SSHKeyPair.fromPem(legacyEcPrivateKey, 'test'),
-      throwsArgumentError,
-    );
-  });
+  test(
+    'SSHKeyPair.fromPem rejects passphrase for unencrypted EC PRIVATE KEY',
+    () {
+      expect(
+        () => SSHKeyPair.fromPem(legacyEcPrivateKey, 'test'),
+        throwsArgumentError,
+      );
+    },
+  );
 
   test('SSHKeyPair.isEncryptedPem detects encrypted EC PRIVATE KEY', () {
     expect(SSHKeyPair.isEncryptedPem(legacyEcPrivateKeyEncrypted), isTrue);
@@ -151,13 +237,15 @@ MAA=
     );
   });
 
-  test('SSHKeyPair.fromPem throws decode error on malformed EC PRIVATE KEY',
-      () {
-    expect(
-      () => SSHKeyPair.fromPem(malformedEcPrivateKey),
-      throwsA(isA<SSHKeyDecodeError>()),
-    );
-  });
+  test(
+    'SSHKeyPair.fromPem throws decode error on malformed EC PRIVATE KEY',
+    () {
+      expect(
+        () => SSHKeyPair.fromPem(malformedEcPrivateKey),
+        throwsA(isA<SSHKeyDecodeError>()),
+      );
+    },
+  );
 
   test('SSHKeyPair.isEncryptedPem works with RSA private key', () async {
     final pem = rsaPrivate;
@@ -285,3 +373,51 @@ MAA=
     expect(signature1.signature, signature2.signature);
   });
 }
+
+final _securityKeyEcdsaPem = () {
+  final q = Uint8List.fromList([4, ...List<int>.generate(64, (i) => i + 1)]);
+  final privateWriter = SSHMessageWriter()
+    ..writeUint32(0x12345678)
+    ..writeUint32(0x12345678)
+    ..writeUtf8(SSHSecurityKeyEcdsaPublicKey.type)
+    ..writeUtf8(SSHSecurityKeyEcdsaPublicKey.curveId)
+    ..writeString(q)
+    ..writeUtf8('ssh:')
+    ..writeUint8(1)
+    ..writeString(Uint8List.fromList([9, 8, 7]))
+    ..writeUtf8('');
+  while (privateWriter.length % 8 != 0) {
+    privateWriter.writeUint8(privateWriter.length % 8);
+  }
+  return OpenSSHKeyPairs.unencrypted(
+    publicKeys: [
+      SSHSecurityKeyEcdsaPublicKey(q: q, application: 'ssh:').encode(),
+    ],
+    privateKeyBlob: privateWriter.takeBytes(),
+  ).toPem();
+}();
+
+final _securityKeyEd25519Pem = () {
+  final publicKey = Uint8List.fromList(List<int>.generate(32, (i) => i + 1));
+  final privateWriter = SSHMessageWriter()
+    ..writeUint32(0x12345678)
+    ..writeUint32(0x12345678)
+    ..writeUtf8(SSHSecurityKeyEd25519PublicKey.type)
+    ..writeString(publicKey)
+    ..writeUtf8('ssh:')
+    ..writeUint8(1)
+    ..writeString(Uint8List.fromList([1, 2, 3]))
+    ..writeUtf8('');
+  while (privateWriter.length % 8 != 0) {
+    privateWriter.writeUint8(privateWriter.length % 8);
+  }
+  return OpenSSHKeyPairs.unencrypted(
+    publicKeys: [
+      SSHSecurityKeyEd25519PublicKey(
+        key: publicKey,
+        application: 'ssh:',
+      ).encode(),
+    ],
+    privateKeyBlob: privateWriter.takeBytes(),
+  ).toPem();
+}();

@@ -53,7 +53,7 @@ class SSHKeyPairAgent implements SSHAgentHandler {
     return writer.takeBytes();
   }
 
-  Uint8List _handleSignRequest(SSHMessageReader reader) {
+  Future<Uint8List> _handleSignRequest(SSHMessageReader reader) async {
     final keyBlob = reader.readString();
     final data = reader.readString();
     final flags = reader.readUint32();
@@ -63,19 +63,19 @@ class SSHKeyPairAgent implements SSHAgentHandler {
       return _failure();
     }
 
-    final signature = _sign(identity, data, flags);
+    final signature = await _sign(identity, data, flags);
     final writer = SSHMessageWriter();
     writer.writeUint8(SSHAgentProtocol.signResponse);
     writer.writeString(signature.encode());
     return writer.takeBytes();
   }
 
-  SSHSignature _sign(SSHKeyPair identity, Uint8List data, int flags) {
+  FutureOr<SSHSignature> _sign(SSHKeyPair identity, Uint8List data, int flags) {
     if (identity is OpenSSHRsaKeyPair || identity is RsaPrivateKey) {
       final signatureType = _rsaSignatureTypeForFlags(flags);
       return _signRsa(identity, data, signatureType);
     }
-    return identity.sign(data);
+    return identity.signAsync(data);
   }
 
   String _rsaSignatureTypeForFlags(int flags) {
@@ -106,11 +106,19 @@ class SSHKeyPairAgent implements SSHAgentHandler {
   asymmetric.RSAPrivateKey? _rsaKeyFrom(SSHKeyPair identity) {
     if (identity is OpenSSHRsaKeyPair) {
       return asymmetric.RSAPrivateKey(
-          identity.n, identity.d, identity.p, identity.q);
+        identity.n,
+        identity.d,
+        identity.p,
+        identity.q,
+      );
     }
     if (identity is RsaPrivateKey) {
       return asymmetric.RSAPrivateKey(
-          identity.n, identity.d, identity.p, identity.q);
+        identity.n,
+        identity.d,
+        identity.p,
+        identity.q,
+      );
     }
     return null;
   }

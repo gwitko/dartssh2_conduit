@@ -85,38 +85,68 @@ void main() {
     }
   });
 
-  test('SSHKeyPairAgent returns failure for empty and unknown requests',
-      () async {
-    final identity = rsaIdentity();
-    final agent = SSHKeyPairAgent([identity]);
-
-    final emptyResponse = await agent.handleRequest(Uint8List(0));
-    expect(
-        SSHMessageReader(emptyResponse).readUint8(), SSHAgentProtocol.failure);
-
-    final unknownWriter = SSHMessageWriter();
-    unknownWriter.writeUint8(255);
-    final unknownResponse =
-        await agent.handleRequest(unknownWriter.takeBytes());
-    expect(
-      SSHMessageReader(unknownResponse).readUint8(),
-      SSHAgentProtocol.failure,
+  test('SSHKeyPairAgent awaits asynchronous callback signers', () async {
+    final softwareKey = rsaIdentity();
+    final identity = SSHCallbackKeyPair(
+      name: softwareKey.name,
+      type: softwareKey.type,
+      publicKey: softwareKey.toPublicKey(),
+      signer: (data) async {
+        await Future<void>.delayed(Duration.zero);
+        return softwareKey.sign(data);
+      },
     );
+    final agent = SSHKeyPairAgent([identity]);
+    final data = Uint8List.fromList('sign-me'.codeUnits);
+
+    final response = await agent.handleRequest(
+      buildSignRequest(identity, data, 0),
+    );
+    final reader = SSHMessageReader(response);
+
+    expect(reader.readUint8(), SSHAgentProtocol.signResponse);
+    expect(reader.readString(), softwareKey.sign(data).encode());
   });
 
-  test('SSHKeyPairAgent returns failure when signing with unknown identity',
-      () async {
-    final agent = SSHKeyPairAgent([rsaIdentity()]);
-    final writer = SSHMessageWriter();
-    writer.writeUint8(SSHAgentProtocol.signRequest);
-    writer.writeString(Uint8List.fromList([0, 1, 2, 3]));
-    writer.writeString(Uint8List.fromList('sign-me'.codeUnits));
-    writer.writeUint32(SSHAgentProtocol.rsaSha2_256);
+  test(
+    'SSHKeyPairAgent returns failure for empty and unknown requests',
+    () async {
+      final identity = rsaIdentity();
+      final agent = SSHKeyPairAgent([identity]);
 
-    final response = await agent.handleRequest(writer.takeBytes());
+      final emptyResponse = await agent.handleRequest(Uint8List(0));
+      expect(
+        SSHMessageReader(emptyResponse).readUint8(),
+        SSHAgentProtocol.failure,
+      );
 
-    expect(SSHMessageReader(response).readUint8(), SSHAgentProtocol.failure);
-  });
+      final unknownWriter = SSHMessageWriter();
+      unknownWriter.writeUint8(255);
+      final unknownResponse = await agent.handleRequest(
+        unknownWriter.takeBytes(),
+      );
+      expect(
+        SSHMessageReader(unknownResponse).readUint8(),
+        SSHAgentProtocol.failure,
+      );
+    },
+  );
+
+  test(
+    'SSHKeyPairAgent returns failure when signing with unknown identity',
+    () async {
+      final agent = SSHKeyPairAgent([rsaIdentity()]);
+      final writer = SSHMessageWriter();
+      writer.writeUint8(SSHAgentProtocol.signRequest);
+      writer.writeString(Uint8List.fromList([0, 1, 2, 3]));
+      writer.writeString(Uint8List.fromList('sign-me'.codeUnits));
+      writer.writeUint32(SSHAgentProtocol.rsaSha2_256);
+
+      final response = await agent.handleRequest(writer.takeBytes());
+
+      expect(SSHMessageReader(response).readUint8(), SSHAgentProtocol.failure);
+    },
+  );
 
   test('SSHAgentChannel handles fragmented request frames', () async {
     final sentMessages = <SSHMessage>[];
@@ -170,10 +200,7 @@ void main() {
     expect(responseReader.readUint32(), 3);
     expect(responseReader.readBytes(3), Uint8List.fromList([42, 43, 44]));
 
-    expect(
-      sentMessages.whereType<SSH_Message_Channel_Data>().length,
-      1,
-    );
+    expect(sentMessages.whereType<SSH_Message_Channel_Data>().length, 1);
 
     controller.destroy();
   });
@@ -240,54 +267,56 @@ void main() {
     controller.destroy();
   });
 
-  test('SSHAgentChannel ignores incomplete frame when channel closes',
-      () async {
-    final dataMessages = <SSH_Message_Channel_Data>[];
-    final handler = _RecordingAgentHandler(Uint8List.fromList([1]));
+  test(
+    'SSHAgentChannel ignores incomplete frame when channel closes',
+    () async {
+      final dataMessages = <SSH_Message_Channel_Data>[];
+      final handler = _RecordingAgentHandler(Uint8List.fromList([1]));
 
-    final controller = SSHChannelController(
-      localId: 1,
-      localMaximumPacketSize: 1024,
-      localInitialWindowSize: 1024,
-      remoteId: 2,
-      remoteMaximumPacketSize: 1024,
-      remoteInitialWindowSize: 1024,
-      sendMessage: (message) {
-        if (message is SSH_Message_Channel_Data) {
-          dataMessages.add(message);
-        }
-      },
-    );
+      final controller = SSHChannelController(
+        localId: 1,
+        localMaximumPacketSize: 1024,
+        localInitialWindowSize: 1024,
+        remoteId: 2,
+        remoteMaximumPacketSize: 1024,
+        remoteInitialWindowSize: 1024,
+        sendMessage: (message) {
+          if (message is SSH_Message_Channel_Data) {
+            dataMessages.add(message);
+          }
+        },
+      );
 
-    SSHAgentChannel(controller.channel, handler);
+      SSHAgentChannel(controller.channel, handler);
 
-    final truncatedFrame = Uint8List.fromList([
-      0,
-      0,
-      0,
-      10,
-      SSHAgentProtocol.requestIdentities,
-    ]);
+      final truncatedFrame = Uint8List.fromList([
+        0,
+        0,
+        0,
+        10,
+        SSHAgentProtocol.requestIdentities,
+      ]);
 
-    controller.handleMessage(
-      SSH_Message_Channel_Data(
-        recipientChannel: controller.localId,
-        data: truncatedFrame,
-      ),
-    );
+      controller.handleMessage(
+        SSH_Message_Channel_Data(
+          recipientChannel: controller.localId,
+          data: truncatedFrame,
+        ),
+      );
 
-    controller.handleMessage(
-      SSH_Message_Channel_EOF(recipientChannel: controller.localId),
-    );
-    controller.handleMessage(
-      SSH_Message_Channel_Close(recipientChannel: controller.localId),
-    );
+      controller.handleMessage(
+        SSH_Message_Channel_EOF(recipientChannel: controller.localId),
+      );
+      controller.handleMessage(
+        SSH_Message_Channel_Close(recipientChannel: controller.localId),
+      );
 
-    await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(Duration.zero);
 
-    expect(handler.requests, isEmpty);
-    expect(dataMessages, isEmpty);
+      expect(handler.requests, isEmpty);
+      expect(dataMessages, isEmpty);
 
-    controller.destroy();
-  });
+      controller.destroy();
+    },
+  );
 }

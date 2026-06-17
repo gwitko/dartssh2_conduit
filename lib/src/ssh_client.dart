@@ -33,8 +33,7 @@ typedef SSHChangePasswordRequestHandler = FutureOr<SSHChangePasswordResponse?>
 
 /// https://datatracker.ietf.org/doc/html/rfc4256#section-3.3
 typedef SSHUserInfoRequestHandler = FutureOr<List<String>?> Function(
-  SSHUserInfoRequest request,
-);
+    SSHUserInfoRequest request);
 
 /// https://datatracker.ietf.org/doc/html/rfc4252#section-5.4
 typedef SSHUserauthBannerHandler = void Function(String banner);
@@ -235,9 +234,8 @@ class SSHClient {
 
     _transport.done.then(
       (_) => _handleTransportClosed(null),
-      onError: (e) => _handleTransportClosed(
-        e is SSHError ? e : SSHSocketError(e),
-      ),
+      onError: (e) =>
+          _handleTransportClosed(e is SSHError ? e : SSHSocketError(e)),
     );
 
     _authenticated.future.catchError(
@@ -251,11 +249,7 @@ class SSHClient {
 
   static String _validateIdent(String ident) {
     if (ident.isEmpty) {
-      throw ArgumentError.value(
-        ident,
-        'ident',
-        'must not be empty',
-      );
+      throw ArgumentError.value(ident, 'ident', 'must not be empty');
     }
 
     if (ident.contains('\r') || ident.contains('\n')) {
@@ -411,9 +405,7 @@ class SSHClient {
   /// remote side via a `direct-streamlocal@openssh.com` channel.
   ///
   /// This is the equivalent of `ssh -L localPort:remoteSocketPath`.
-  Future<SSHForwardChannel> forwardLocalUnix(
-    String remoteSocketPath,
-  ) async {
+  Future<SSHForwardChannel> forwardLocalUnix(String remoteSocketPath) async {
     await _authenticated.future;
     final channelController = await _openForwardLocalUnixChannel(
       remoteSocketPath,
@@ -839,11 +831,13 @@ class SSHClient {
     final response = await onChangePasswordRequest!(message.prompt);
     if (response == null) return _tryNextAuthMethod();
 
-    _sendMessage(SSH_Message_Userauth_Request.newPassword(
-      user: username,
-      oldPassword: response.oldPassword,
-      newPassword: response.newPassword,
-    ));
+    _sendMessage(
+      SSH_Message_Userauth_Request.newPassword(
+        user: username,
+        oldPassword: response.oldPassword,
+        newPassword: response.newPassword,
+      ),
+    );
   }
 
   Future<void> _handleUserauthInfoRequest(Uint8List payload) async {
@@ -1048,11 +1042,7 @@ class SSHClient {
       remoteMaximumPacketSize: message.maximumPacketSize,
     );
 
-    SSHAgentChannel(
-      channelController.channel,
-      handler,
-      printDebug: printDebug,
-    );
+    SSHAgentChannel(channelController.channel, handler, printDebug: printDebug);
   }
 
   /// Finds a remote forward that matches the given host and port.
@@ -1217,24 +1207,28 @@ class SSHClient {
   void _authWithNextPublicKey() {
     printDebug?.call('SSHClient._authWithPublicKey');
 
-    final keyPair = _keyPairsLeft.removeFirst();
+    _catch(() async {
+      final keyPair = _keyPairsLeft.removeFirst();
 
-    final challenge = _transport.composeChallenge(
-      username: username,
-      service: 'ssh-connection',
-      publicKeyAlgorithm: keyPair.type,
-      publicKey: keyPair.toPublicKey().encode(),
-    );
-
-    _sendMessage(
-      SSH_Message_Userauth_Request.publicKey(
+      final publicKey = keyPair.toPublicKey().encode();
+      final challenge = _transport.composeChallenge(
         username: username,
+        service: 'ssh-connection',
         publicKeyAlgorithm: keyPair.type,
-        publicKey: keyPair.toPublicKey().encode(),
-        signature: keyPair.sign(challenge).encode(),
-        // signature: null,
-      ),
-    );
+        publicKey: publicKey,
+      );
+      final signature = await keyPair.signAsync(challenge);
+
+      _sendMessage(
+        SSH_Message_Userauth_Request.publicKey(
+          username: username,
+          publicKeyAlgorithm: keyPair.type,
+          publicKey: publicKey,
+          signature: signature.encode(),
+          // signature: null,
+        ),
+      );
+    });
   }
 
   void _authWithKeyboardInteractive() {

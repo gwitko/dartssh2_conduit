@@ -4,10 +4,13 @@ export 'src/ssh_client.dart';
 export 'src/ssh_errors.dart';
 export 'src/ssh_forward.dart';
 export 'src/ssh_key_pair.dart';
+export 'src/ssh_hostkey.dart';
 export 'src/ssh_pem.dart';
 export 'src/ssh_session.dart';
 export 'src/ssh_signal.dart';
 export 'src/ssh_transport.dart';
+
+export 'src/hostkey/hostkey_sk.dart';
 
 export 'src/socket/ssh_socket.dart';
 

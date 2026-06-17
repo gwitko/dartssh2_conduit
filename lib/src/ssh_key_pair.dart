@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
 import 'dart:typed_data';
@@ -8,7 +9,6 @@ import 'package:dartssh2/dartssh2.dart';
 import 'package:dartssh2/src/hostkey/hostkey_ecdsa.dart';
 import 'package:dartssh2/src/hostkey/hostkey_ed25519.dart';
 import 'package:dartssh2/src/hostkey/hostkey_rsa.dart';
-import 'package:dartssh2/src/ssh_hostkey.dart';
 import 'package:dartssh2/src/ssh_message.dart';
 import 'package:dartssh2/src/utils/bigint.dart';
 import 'package:dartssh2/src/utils/bcrypt.dart';
@@ -16,6 +16,8 @@ import 'package:dartssh2/src/utils/cipher_ext.dart';
 import 'package:dartssh2/src/utils/list.dart';
 import 'package:pinenacl/ed25519.dart' as ed25519;
 import 'package:pointycastle/export.dart';
+
+typedef SSHKeySigner = FutureOr<SSHSignature> Function(Uint8List data);
 
 abstract class SSHKeyPair {
   static List<SSHKeyPair> fromPem(String pemText, [String? passphrase]) {
@@ -65,7 +67,48 @@ abstract class SSHKeyPair {
 
   SSHSignature sign(Uint8List data);
 
+  FutureOr<SSHSignature> signAsync(Uint8List data) => sign(data);
+
   String toPem();
+}
+
+class SSHCallbackKeyPair implements SSHKeyPair {
+  SSHCallbackKeyPair({
+    required this.name,
+    required this.type,
+    required SSHHostKey publicKey,
+    required SSHKeySigner signer,
+  })  : _publicKey = publicKey,
+        _signer = signer;
+
+  @override
+  final String name;
+
+  @override
+  final String type;
+
+  final SSHHostKey _publicKey;
+  final SSHKeySigner _signer;
+
+  @override
+  SSHHostKey toPublicKey() => _publicKey;
+
+  @override
+  SSHSignature sign(Uint8List data) {
+    final result = _signer(data);
+    if (result is Future<SSHSignature>) {
+      throw UnsupportedError('This key requires asynchronous signing');
+    }
+    return result;
+  }
+
+  @override
+  FutureOr<SSHSignature> signAsync(Uint8List data) => _signer(data);
+
+  @override
+  String toPem() {
+    throw UnsupportedError('Callback SSH keys cannot be exported as PEM');
+  }
 }
 
 class OpenSSHKeyPairs {
@@ -186,6 +229,12 @@ class OpenSSHKeyPairs {
         case 'ecdsa-sha2-nistp521':
           keypairs.add(OpenSSHEcdsaKeyPair.readFrom(reader));
           break;
+        case SSHSecurityKeyEcdsaPublicKey.type:
+          keypairs.add(OpenSSHSecurityKeyEcdsaKeyPair.readFrom(reader));
+          break;
+        case SSHSecurityKeyEd25519PublicKey.type:
+          keypairs.add(OpenSSHSecurityKeyEd25519KeyPair.readFrom(reader));
+          break;
         default:
           throw UnsupportedError('Unsupported key type: $type');
       }
@@ -284,6 +333,9 @@ abstract class OpenSSHKeyPair implements SSHKeyPair {
   void writeTo(SSHMessageWriter writer);
 
   @override
+  FutureOr<SSHSignature> signAsync(Uint8List data) => sign(data);
+
+  @override
   String toPem() {
     final writer = SSHMessageWriter();
     final checkInt = Random().nextInt(0xFFFFFFFF);
@@ -354,9 +406,7 @@ class OpenSSHRsaKeyPair with OpenSSHKeyPair {
 
     signer.init(
       true,
-      PrivateKeyParameter<RSAPrivateKey>(
-        RSAPrivateKey(n, d, p, q),
-      ),
+      PrivateKeyParameter<RSAPrivateKey>(RSAPrivateKey(n, d, p, q)),
     );
 
     return SSHRsaSignature(type, signer.generateSignature(data).bytes);
@@ -505,6 +555,188 @@ class OpenSSHEcdsaKeyPair with OpenSSHKeyPair {
   }
 }
 
+abstract class OpenSSHSecurityKeyPair implements SSHKeyPair {
+  String get application;
+  int get flags;
+  Uint8List get keyHandle;
+  String get reserved;
+  SSHKeySigner? get signer;
+
+  void writeTo(SSHMessageWriter writer);
+
+  @override
+  FutureOr<SSHSignature> signAsync(Uint8List data) {
+    final signer = this.signer;
+    if (signer == null) {
+      throw UnsupportedError('Security key requires an external signer');
+    }
+    return signer(data);
+  }
+
+  @override
+  SSHSignature sign(Uint8List data) {
+    final result = signAsync(data);
+    if (result is Future<SSHSignature>) {
+      throw UnsupportedError('Security key requires asynchronous signing');
+    }
+    return result;
+  }
+
+  @override
+  String toPem() {
+    final writer = SSHMessageWriter();
+    final checkInt = Random().nextInt(0xFFFFFFFF);
+
+    writer.writeUint32(checkInt);
+    writer.writeUint32(checkInt);
+    writer.writeUtf8(name);
+    writeTo(writer);
+
+    for (var i = 0; writer.length % 8 != 0; i++) {
+      writer.writeUint8(i + 1);
+    }
+
+    return OpenSSHKeyPairs.unencrypted(
+      publicKeys: [toPublicKey().encode()],
+      privateKeyBlob: writer.takeBytes(),
+    ).toPem();
+  }
+}
+
+class OpenSSHSecurityKeyEcdsaKeyPair with OpenSSHSecurityKeyPair {
+  OpenSSHSecurityKeyEcdsaKeyPair({
+    required this.q,
+    required this.application,
+    required this.flags,
+    required this.keyHandle,
+    required this.reserved,
+    this.signer,
+  });
+
+  @override
+  final String name = SSHSecurityKeyEcdsaPublicKey.type;
+
+  @override
+  final String type = SSHSecurityKeyEcdsaPublicKey.type;
+
+  final Uint8List q;
+
+  @override
+  final String application;
+
+  @override
+  final int flags;
+
+  @override
+  final Uint8List keyHandle;
+
+  @override
+  final String reserved;
+
+  @override
+  final SSHKeySigner? signer;
+
+  factory OpenSSHSecurityKeyEcdsaKeyPair.readFrom(SSHMessageReader reader) {
+    final curveId = reader.readUtf8();
+    if (curveId != SSHSecurityKeyEcdsaPublicKey.curveId) {
+      throw UnsupportedError('Unsupported security key ECDSA curve: $curveId');
+    }
+    final q = reader.readString();
+    final application = reader.readUtf8();
+    final flags = reader.readUint8();
+    final keyHandle = reader.readString();
+    final reserved = reader.readUtf8();
+    return OpenSSHSecurityKeyEcdsaKeyPair(
+      q: q,
+      application: application,
+      flags: flags,
+      keyHandle: keyHandle,
+      reserved: reserved,
+    );
+  }
+
+  @override
+  SSHHostKey toPublicKey() {
+    return SSHSecurityKeyEcdsaPublicKey(q: q, application: application);
+  }
+
+  @override
+  void writeTo(SSHMessageWriter writer) {
+    writer.writeUtf8(SSHSecurityKeyEcdsaPublicKey.curveId);
+    writer.writeString(q);
+    writer.writeUtf8(application);
+    writer.writeUint8(flags);
+    writer.writeString(keyHandle);
+    writer.writeUtf8(reserved);
+  }
+}
+
+class OpenSSHSecurityKeyEd25519KeyPair with OpenSSHSecurityKeyPair {
+  OpenSSHSecurityKeyEd25519KeyPair({
+    required this.publicKey,
+    required this.application,
+    required this.flags,
+    required this.keyHandle,
+    required this.reserved,
+    this.signer,
+  });
+
+  @override
+  final String name = SSHSecurityKeyEd25519PublicKey.type;
+
+  @override
+  final String type = SSHSecurityKeyEd25519PublicKey.type;
+
+  final Uint8List publicKey;
+
+  @override
+  final String application;
+
+  @override
+  final int flags;
+
+  @override
+  final Uint8List keyHandle;
+
+  @override
+  final String reserved;
+
+  @override
+  final SSHKeySigner? signer;
+
+  factory OpenSSHSecurityKeyEd25519KeyPair.readFrom(SSHMessageReader reader) {
+    final publicKey = reader.readString();
+    final application = reader.readUtf8();
+    final flags = reader.readUint8();
+    final keyHandle = reader.readString();
+    final reserved = reader.readUtf8();
+    return OpenSSHSecurityKeyEd25519KeyPair(
+      publicKey: publicKey,
+      application: application,
+      flags: flags,
+      keyHandle: keyHandle,
+      reserved: reserved,
+    );
+  }
+
+  @override
+  SSHHostKey toPublicKey() {
+    return SSHSecurityKeyEd25519PublicKey(
+      key: publicKey,
+      application: application,
+    );
+  }
+
+  @override
+  void writeTo(SSHMessageWriter writer) {
+    writer.writeString(publicKey);
+    writer.writeUtf8(application);
+    writer.writeUint8(flags);
+    writer.writeString(keyHandle);
+    writer.writeUtf8(reserved);
+  }
+}
+
 class RsaKeyPair {
   final RsaKeyPairDEKInfo? dekInfo;
 
@@ -558,8 +790,11 @@ class RsaKeyPair {
 
     final key = Uint8List.sublistView(kdfHash, 0, cipher.keySize);
 
-    final decryptCipher =
-        cipher.createCipher(key, dekInfo!.iv, forEncryption: false);
+    final decryptCipher = cipher.createCipher(
+      key,
+      dekInfo!.iv,
+      forEncryption: false,
+    );
 
     return decryptCipher.processAll(keyBlob);
   }
@@ -693,13 +928,14 @@ class RsaPrivateKey implements SSHKeyPair {
 
     signer.init(
       true,
-      PrivateKeyParameter<RSAPrivateKey>(
-        RSAPrivateKey(n, d, p, q),
-      ),
+      PrivateKeyParameter<RSAPrivateKey>(RSAPrivateKey(n, d, p, q)),
     );
 
     return SSHRsaSignature(type, signer.generateSignature(data).bytes);
   }
+
+  @override
+  FutureOr<SSHSignature> signAsync(Uint8List data) => sign(data);
 
   @override
   String toPem() {
@@ -744,9 +980,7 @@ class EcKeyPair {
 
   OpenSSHEcdsaKeyPair getPrivateKeys([String? passphrase]) {
     if (isEncrypted) {
-      throw UnsupportedError(
-        'Encrypted EC PRIVATE KEY is not supported yet',
-      );
+      throw UnsupportedError('Encrypted EC PRIVATE KEY is not supported yet');
     }
 
     if (passphrase != null) {
@@ -783,8 +1017,10 @@ class EcKeyPair {
       }
     }
 
-    final curveId =
-        _inferCurveId(publicPoint?.length ?? 0, privateKeyOctets.length);
+    final curveId = _inferCurveId(
+      publicPoint?.length ?? 0,
+      privateKeyOctets.length,
+    );
     if (curveId == null) {
       throw UnsupportedError('Unsupported EC PRIVATE KEY curve');
     }
