@@ -2,6 +2,7 @@
 library ssh_client_test;
 
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:dartssh2/dartssh2.dart';
 import 'package:test/test.dart';
@@ -16,11 +17,10 @@ void main() {
       client.close();
     });
 
-    test('onVerifyHostKey is called with OpenSSH-style SHA256 fingerprint',
-        () async {
+    test('onVerifyHostKey is called with raw MD5 fingerprint bytes', () async {
       var verifyCalled = false;
       String? hostkeyType;
-      String? hostkeyFingerprint;
+      Uint8List? hostkeyFingerprint;
 
       var client = SSHClient(
         await SSHSocket.connect('test.rebex.net', 22),
@@ -29,7 +29,7 @@ void main() {
         onVerifyHostKey: (type, fingerprint) {
           verifyCalled = true;
           hostkeyType = type;
-          hostkeyFingerprint = utf8.decode(fingerprint);
+          hostkeyFingerprint = Uint8List.fromList(fingerprint);
           return true;
         },
       );
@@ -39,10 +39,7 @@ void main() {
 
       expect(verifyCalled, isTrue);
       expect(hostkeyType, isNotEmpty);
-      expect(hostkeyFingerprint, startsWith('SHA256:'));
-      final base64Part = hostkeyFingerprint!.substring(7);
-      expect(base64Part.length, equals(43));
-      expect(() => base64.decode('$base64Part='), returnsNormally);
+      expect(hostkeyFingerprint, hasLength(16));
     });
 
     test('onVerifyHostKey returning false aborts connection', () async {

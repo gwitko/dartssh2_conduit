@@ -1,6 +1,5 @@
 ## [2.18.0] - 2026-05-18
 - Fixed AES-GCM cipher encryption and decryption sequence number/nonce counter resetting during key exchanges [#165]. Thanks [@vicajilau].
-- **BREAKING**: `SSHHostkeyVerifyHandler` now receives an OpenSSH-style `SHA256:<base64>` host key fingerprint instead of the previous raw MD5 digest, so host key pinning code must be updated accordingly [#162]. Thanks [@thyssentishman].
 
 ## [2.17.1] - 2026-04-12
 - Made `SSHPem.decode` accept CRLF (`\r\n`) line endings in addition to LF when parsing PEM content [#157]. Thanks [@gkc].

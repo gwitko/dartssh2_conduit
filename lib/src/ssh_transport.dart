@@ -31,18 +31,11 @@ typedef SSHPrintHandler = void Function(String?);
 
 /// Function called when host key is received.
 /// [type] is the type of the host key, For example 'ssh-rsa',
-/// [fingerprint] OpenSSH-style SHA256 fingerprint of the host key,
-/// UTF-8 encoded as `SHA256:<base64>`.
+/// [fingerprint] md5 fingerprint of the host key.
 typedef SSHHostkeyVerifyHandler = FutureOr<bool> Function(
   String type,
   Uint8List fingerprint,
 );
-
-Uint8List _hostkeyFingerprint(Uint8List hostkey) {
-  final fingerprint = SHA256Digest().process(hostkey);
-  final encoded = base64.encode(fingerprint).replaceAll('=', '');
-  return Uint8List.fromList(utf8.encode('SHA256:$encoded'));
-}
 
 typedef SSHTransportReadyHandler = void Function();
 
@@ -1264,7 +1257,7 @@ class SSHTransport {
     _sessionId ??= exchangeHash;
     _sharedSecret = sharedSecret;
 
-    final fingerprint = _hostkeyFingerprint(hostkey);
+    final fingerprint = MD5Digest().process(hostkey);
 
     if (_hostkeyVerified) {
       _sendNewKeys();
