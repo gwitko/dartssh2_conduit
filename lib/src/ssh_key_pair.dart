@@ -149,6 +149,67 @@ class OpenSSHKeyPairs {
         kdfName = 'none',
         kdfOptions = null;
 
+  /// Encrypts an unpadded private key section ([privateKeyBlob], the
+  /// `checkint`-prefixed key data) with [passphrase] and wraps it as an
+  /// encrypted OpenSSH key. The blob is padded to the cipher block size before
+  /// encryption, matching OpenSSH's on-disk layout.
+  factory OpenSSHKeyPairs.encrypted({
+    required List<Uint8List> publicKeys,
+    required Uint8List privateKeyBlob,
+    required String passphrase,
+    SSHCipherType? cipher,
+    int rounds = 16,
+  }) {
+    final cipherType = cipher ?? SSHCipherType.aes256ctr;
+    final salt = _randomBytes(16);
+    final kdfOptions = OpenSSHBcryptKdfOptions(salt, rounds);
+
+    final kdfHash = Uint8List(cipherType.keySize + cipherType.ivSize);
+    final passphraseBytes = Utf8Encoder().convert(passphrase);
+    bcrypt_pbkdf(
+      passphraseBytes,
+      passphraseBytes.lengthInBytes,
+      salt,
+      salt.lengthInBytes,
+      kdfHash,
+      kdfHash.lengthInBytes,
+      rounds,
+    );
+
+    final key = Uint8List.view(kdfHash.buffer, 0, cipherType.keySize);
+    final iv = Uint8List.view(kdfHash.buffer, cipherType.keySize, cipherType.ivSize);
+    final padded = _padPrivateKeyBlob(privateKeyBlob, cipherType.blockSize);
+    final encryptCipher = cipherType.createCipher(key, iv, forEncryption: true);
+
+    return OpenSSHKeyPairs(
+      cipherName: cipherType.name,
+      kdfName: 'bcrypt',
+      kdfOptions: kdfOptions,
+      publicKeys: publicKeys,
+      privateKeyBlob: encryptCipher.processAll(padded),
+    );
+  }
+
+  static Uint8List _randomBytes(int length) {
+    final random = Random.secure();
+    return Uint8List.fromList(
+      List<int>.generate(length, (_) => random.nextInt(256)),
+    );
+  }
+
+  static Uint8List _padPrivateKeyBlob(Uint8List blob, int blockSize) {
+    final remainder = blob.length % blockSize;
+    if (remainder == 0) {
+      return blob;
+    }
+    final writer = SSHMessageWriter();
+    writer.writeBytes(blob);
+    for (var i = 1; i <= blockSize - remainder; i++) {
+      writer.writeUint8(i);
+    }
+    return writer.takeBytes();
+  }
+
   factory OpenSSHKeyPairs.decode(Uint8List keyBlob) {
     final reader = SSHMessageReader(keyBlob);
     final actualMagic = reader.readBytes(magic.length);
@@ -353,6 +414,36 @@ abstract class OpenSSHKeyPair implements SSHKeyPair {
     return OpenSSHKeyPairs.unencrypted(
       publicKeys: [toPublicKey().encode()],
       privateKeyBlob: writer.takeBytes(),
+    ).toPem();
+  }
+
+  /// Serializes the key pair as an OpenSSH PEM whose private section is
+  /// encrypted with [passphrase] using the `bcrypt` KDF and [cipher]
+  /// (`aes256-ctr` by default). An empty [passphrase] yields an unencrypted
+  /// PEM, identical to [toPem].
+  String toEncryptedPem(
+    String passphrase, {
+    SSHCipherType? cipher,
+    int rounds = 16,
+  }) {
+    if (passphrase.isEmpty) {
+      return toPem();
+    }
+
+    final writer = SSHMessageWriter();
+    final checkInt = Random().nextInt(0xFFFFFFFF);
+
+    writer.writeUint32(checkInt);
+    writer.writeUint32(checkInt);
+    writer.writeUtf8(name);
+    writeTo(writer);
+
+    return OpenSSHKeyPairs.encrypted(
+      publicKeys: [toPublicKey().encode()],
+      privateKeyBlob: writer.takeBytes(),
+      passphrase: passphrase,
+      cipher: cipher,
+      rounds: rounds,
     ).toPem();
   }
 }

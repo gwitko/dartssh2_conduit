@@ -96,6 +96,36 @@ MAA=
     );
   });
 
+  test('OpenSSHKeyPair.toEncryptedPem round-trips through fromPem', () {
+    final original = SSHKeyPair.fromPem(ed25519Private).single as OpenSSHKeyPair;
+
+    final pem = original.toEncryptedPem('round trip pass');
+
+    expect(SSHKeyPair.isEncryptedPem(pem), isTrue);
+
+    final decrypted = SSHKeyPair.fromPem(pem, 'round trip pass').single;
+    expect(
+      decrypted.toPublicKey().encode(),
+      original.toPublicKey().encode(),
+    );
+  });
+
+  test('OpenSSHKeyPair.toEncryptedPem rejects the wrong passphrase', () {
+    final original = SSHKeyPair.fromPem(ed25519Private).single as OpenSSHKeyPair;
+
+    final pem = original.toEncryptedPem('right');
+
+    expect(() => SSHKeyPair.fromPem(pem, 'wrong'), throwsA(anything));
+  });
+
+  test('OpenSSHKeyPair.toEncryptedPem with empty passphrase is unencrypted', () {
+    final original = SSHKeyPair.fromPem(ed25519Private).single as OpenSSHKeyPair;
+
+    final pem = original.toEncryptedPem('');
+
+    expect(SSHKeyPair.isEncryptedPem(pem), isFalse);
+  });
+
   test('SSHKeyPair.fromPem works with OpenSSH ECDSA security key stubs', () {
     final keypair = SSHKeyPair.fromPem(_securityKeyEcdsaPem).single;
 
