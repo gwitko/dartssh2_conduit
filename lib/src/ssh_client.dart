@@ -11,6 +11,7 @@ import 'package:dartssh2/src/ssh_channel.dart';
 import 'package:dartssh2/src/ssh_channel_id.dart';
 import 'package:dartssh2/src/ssh_errors.dart';
 import 'package:dartssh2/src/ssh_forward.dart';
+import 'package:dartssh2/src/ssh_hostkey.dart';
 import 'package:dartssh2/src/ssh_keepalive.dart';
 import 'package:dartssh2/src/ssh_key_pair.dart';
 import 'package:dartssh2/src/ssh_session.dart';
@@ -288,6 +289,8 @@ class SSHClient {
       : null;
 
   SSHAuthMethod? _currentAuthMethod;
+
+  SSHKeyPair? _publicKeyProbePending;
 
   /// A [Future] that completes when the client has authenticated, or
   /// completes with an error if the client could not authenticate.
@@ -807,6 +810,7 @@ class SSHClient {
     final message = SSH_Message_Userauth_Failure.decode(payload);
     printTrace?.call('<- $socket: $message');
     printDebug?.call('SSHClient._handleUserauthFailure');
+    _publicKeyProbePending = null;
     _tryNextAuthMethod();
   }
 
@@ -818,9 +822,24 @@ class SSHClient {
         return _catch(() => _handleUserauthPasswordChangeRequest(payload));
       case SSHAuthMethod.keyboardInteractive:
         return _catch(() => _handleUserauthInfoRequest(payload));
+      case SSHAuthMethod.publicKey:
+        return _catch(() => _handleUserauthPublicKeyOk(payload));
       default:
         printDebug?.call('unknown auth method: $_currentAuthMethod');
     }
+  }
+
+  Future<void> _handleUserauthPublicKeyOk(Uint8List payload) async {
+    printDebug?.call('SSHClient._handleUserauthPublicKeyOk');
+    final message = SSH_Message_Userauth_PublicKey_Ok.decode(payload);
+    printTrace?.call('<- $socket: $message');
+
+    final keyPair = _publicKeyProbePending;
+    _publicKeyProbePending = null;
+    if (keyPair == null) {
+      return _tryNextAuthMethod();
+    }
+    await _signAndSendPublicKeyAuth(keyPair);
   }
 
   Future<void> _handleUserauthPasswordChangeRequest(Uint8List payload) async {
@@ -1210,25 +1229,72 @@ class SSHClient {
     _catch(() async {
       final keyPair = _keyPairsLeft.removeFirst();
 
-      final publicKey = keyPair.toPublicKey().encode();
-      final challenge = _transport.composeChallenge(
+      if (keyPair is OpenSSHSecurityKeyPair) {
+        _publicKeyProbePending = keyPair;
+        _sendMessage(
+          SSH_Message_Userauth_Request.publicKey(
+            username: username,
+            publicKeyAlgorithm: keyPair.type,
+            publicKey: keyPair.toPublicKey().encode(),
+            signature: null,
+          ),
+        );
+        return;
+      }
+
+      await _signAndSendPublicKeyAuth(keyPair);
+    });
+  }
+
+  Future<void> _signAndSendPublicKeyAuth(SSHKeyPair keyPair) async {
+    final publicKey = keyPair.toPublicKey().encode();
+    final challenge = _transport.composeChallenge(
+      username: username,
+      service: 'ssh-connection',
+      publicKeyAlgorithm: keyPair.type,
+      publicKey: publicKey,
+    );
+
+    final SSHSignature signature;
+    try {
+      signature = await keyPair.signAsync(challenge);
+    } on SSHSecurityKeyNotPresentError catch (error) {
+      printDebug?.call('SSHClient security key not present: $error');
+      _preferKeyPair(error.preferredPublicKey);
+      return _tryNextAuthMethod();
+    }
+
+    _sendMessage(
+      SSH_Message_Userauth_Request.publicKey(
         username: username,
-        service: 'ssh-connection',
         publicKeyAlgorithm: keyPair.type,
         publicKey: publicKey,
-      );
-      final signature = await keyPair.signAsync(challenge);
+        signature: signature.encode(),
+      ),
+    );
+  }
 
-      _sendMessage(
-        SSH_Message_Userauth_Request.publicKey(
-          username: username,
-          publicKeyAlgorithm: keyPair.type,
-          publicKey: publicKey,
-          signature: signature.encode(),
-          // signature: null,
-        ),
-      );
-    });
+  void _preferKeyPair(Uint8List? publicKey) {
+    if (publicKey == null) return;
+    SSHKeyPair? match;
+    for (final keyPair in _keyPairsLeft) {
+      if (_publicKeyBlobsEqual(keyPair.toPublicKey().encode(), publicKey)) {
+        match = keyPair;
+        break;
+      }
+    }
+    if (match != null) {
+      _keyPairsLeft.remove(match);
+      _keyPairsLeft.addFirst(match);
+    }
+  }
+
+  static bool _publicKeyBlobsEqual(Uint8List a, Uint8List b) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) return false;
+    }
+    return true;
   }
 
   void _authWithKeyboardInteractive() {

@@ -162,6 +162,60 @@ void main() {
       },
     );
 
+    test(
+      'refused security key probe fails without invoking the signer',
+      () async {
+        var signerCalled = false;
+        final keyPair = OpenSSHSecurityKeyEd25519KeyPair(
+          publicKey: Uint8List(32),
+          application: 'ssh:',
+          flags: 0x01,
+          keyHandle: Uint8List.fromList([1, 2, 3]),
+          reserved: '',
+          signer: (data) {
+            signerCalled = true;
+            throw StateError('signer should not run for a refused probe');
+          },
+        );
+        final client = SSHClient(
+          await SSHSocket.connect('test.rebex.net', 22),
+          username: 'demos',
+          identities: [keyPair],
+        );
+        try {
+          await client.authenticated;
+          fail('should have thrown');
+        } catch (e) {
+          expect(e, isA<SSHAuthFailError>());
+        }
+        expect(signerCalled, isFalse);
+        client.close();
+      },
+    );
+
+    test(
+      'security key not present falls through to the next auth method',
+      () async {
+        final keyPair = OpenSSHSecurityKeyEd25519KeyPair(
+          publicKey: Uint8List(32),
+          application: 'ssh:',
+          flags: 0x01,
+          keyHandle: Uint8List.fromList([1, 2, 3]),
+          reserved: '',
+          signer: (data) =>
+              throw SSHSecurityKeyNotPresentError('key not present'),
+        );
+        final client = SSHClient(
+          await SSHSocket.connect('test.rebex.net', 22),
+          username: 'demo',
+          identities: [keyPair],
+          onPasswordRequest: () => 'password',
+        );
+        await client.authenticated;
+        client.close();
+      },
+    );
+
     test('throws SSHAuthFailError when identity is empty', () async {
       var client = SSHClient(
         await SSHSocket.connect('test.rebex.net', 22),

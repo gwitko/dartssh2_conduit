@@ -138,9 +138,10 @@ class SSH_Message_Userauth_Request extends SSHMessage {
           );
         }
       case 'publickey':
+        final hasSignature = reader.readBool();
         final publicKeyAlgorithm = reader.readUtf8();
         final publicKey = reader.readString();
-        final signature = reader.readString();
+        final signature = hasSignature ? reader.readString() : null;
         return SSH_Message_Userauth_Request.publicKey(
           username: user,
           serviceName: serviceName,
@@ -336,6 +337,43 @@ class SSH_Message_Userauth_Passwd_ChangeReq extends SSHMessage {
   @override
   String toString() {
     return 'SSH_Message_Userauth_Password_Change_Request(prompt: $prompt)';
+  }
+}
+
+class SSH_Message_Userauth_PublicKey_Ok extends SSHMessage {
+  static const messageId = 60;
+
+  final String publicKeyAlgorithm;
+  final Uint8List publicKey;
+
+  SSH_Message_Userauth_PublicKey_Ok({
+    required this.publicKeyAlgorithm,
+    required this.publicKey,
+  });
+
+  factory SSH_Message_Userauth_PublicKey_Ok.decode(Uint8List bytes) {
+    final reader = SSHMessageReader(bytes);
+    reader.skip(1);
+    final publicKeyAlgorithm = reader.readUtf8();
+    final publicKey = reader.readString();
+    return SSH_Message_Userauth_PublicKey_Ok(
+      publicKeyAlgorithm: publicKeyAlgorithm,
+      publicKey: publicKey,
+    );
+  }
+
+  @override
+  Uint8List encode() {
+    final writer = SSHMessageWriter();
+    writer.writeUint8(messageId);
+    writer.writeUtf8(publicKeyAlgorithm);
+    writer.writeString(publicKey);
+    return writer.takeBytes();
+  }
+
+  @override
+  String toString() {
+    return 'SSH_Message_Userauth_PublicKey_Ok(publicKeyAlgorithm: $publicKeyAlgorithm)';
   }
 }
 

@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 /// Interface for all the exceptions thrown by the library.
 abstract class SSHError {}
 
@@ -53,6 +55,23 @@ class SSHAuthAbortError with SSHMessageError implements SSHAuthError {
   final SSHError? reason;
 
   SSHAuthAbortError(this.message, [this.reason]);
+}
+
+/// Thrown by an external security-key signer when the credential for the
+/// requested key pair is not on the presented authenticator. The client skips
+/// to the next key pair instead of aborting authentication. When the signer
+/// discovered which sibling key pair the authenticator does hold, it passes
+/// that key's public key blob in [preferredPublicKey] so the client can try
+/// it next.
+class SSHSecurityKeyNotPresentError
+    with SSHMessageError
+    implements SSHError {
+  @override
+  final String message;
+
+  final Uint8List? preferredPublicKey;
+
+  SSHSecurityKeyNotPresentError(this.message, {this.preferredPublicKey});
 }
 
 /// Errors that happen when the library receives an malformed packet.
